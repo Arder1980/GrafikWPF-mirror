@@ -1,3 +1,5 @@
-=== ProjektSnapshot.txt - 08/19/2025 22:59:55 ===
+=== ProjektSnapshot.txt - 19.08.2025 23:03:20 ===
 PlikĂłw: 0
+Ignorowane katalogi: bin, obj, .git, packages, TestResults, .vs
+Rozszerzenia: *.cs, *.xaml, *.csproj, *.sln, *.ps1, *.json
 =========================================
