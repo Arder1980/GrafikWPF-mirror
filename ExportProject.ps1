@@ -12,22 +12,26 @@ $OutputFile = Join-Path $SourcePath $OutputFile
 # Rozszerzenia do eksportu
 $extensions = @("*.cs", "*.xaml", "*.csproj", "*.sln", "*.ps1", "*.json")
 
-# Ignorowane katalogi
+# Ignorowane katalogi (po pełnej ścieżce)
 $ignoreDirs = @("bin", "obj", ".git", "packages", "TestResults", ".vs")
 
-# Funkcja rekurencyjna
+# Funkcja rekurencyjna – UWAGA: -Include działa poprawnie, gdy -Path ma wildcard (*)
 function Get-FilesRecursively {
     param ($path)
-    Get-ChildItem -Path $path -Recurse -File -Include $extensions |
+
+    $pathWithWildcard = Join-Path $path '*'
+
+    Get-ChildItem -Path $pathWithWildcard -Recurse -File -Include $extensions |
         Where-Object {
-            $fullPath = $_.FullName
-            -not ($ignoreDirs | ForEach-Object { $fullPath -match "\\$_(\\|$)" })
+            $fullPath = $_.FullName.ToLower()
+            -not ($ignoreDirs | ForEach-Object { $fullPath -like "*\$_\*" })
         }
 }
 
 try {
     $files = Get-FilesRecursively $SourcePath | Sort-Object FullName
 
+    # UTF-8 bez BOM
     $sw = New-Object IO.StreamWriter($OutputFile, $false, [Text.UTF8Encoding]::new($false))
     $sw.WriteLine("=== ProjektSnapshot.txt - $(Get-Date) ===")
     $sw.WriteLine("Plików: {0}" -f $files.Count)
