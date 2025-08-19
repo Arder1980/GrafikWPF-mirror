@@ -1,4 +1,4 @@
-=== ProjektSnapshot.txt - 08/19/2025 22:09:36 ===
+=== ProjektSnapshot.txt - 08/19/2025 22:09:53 ===
 PlikĂłw: 1453
 =========================================
 === FILE: C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods\.vs\GrafikWPF\v17\DocumentLayout.backup.json ===
@@ -206,7 +206,7 @@ namespace GrafikWPF
         string UzyciePamieci
     );
 }
-
+//test
 === END FILE: C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods\GrafikWPF\AlgorithmInfo.cs ===
 
 === FILE: C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods\GrafikWPF\Algorithms\FlowUB.cs ===
