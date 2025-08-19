@@ -10,4 +10,4 @@
         string UzyciePamieci
     );
 }
-//test
+// test

@@ -13,13 +13,16 @@ $OutputFile = Join-Path $SourcePath $OutputFile
 $extensions = @("*.cs", "*.xaml", "*.csproj", "*.sln", "*.ps1", "*.json")
 
 # Ignorowane katalogi
-$ignoreDirs = @("bin", "obj", ".git", "packages", "TestResults")
+$ignoreDirs = @("bin", "obj", ".git", "packages", "TestResults", ".vs")
 
 # Funkcja rekurencyjna
 function Get-FilesRecursively {
     param ($path)
     Get-ChildItem -Path $path -Recurse -File -Include $extensions |
-        Where-Object { $ignoreDirs -notcontains ($_.Directory.Name) }
+        Where-Object {
+            $fullPath = $_.FullName
+            -not ($ignoreDirs | ForEach-Object { $fullPath -match "\\$_(\\|$)" })
+        }
 }
 
 try {

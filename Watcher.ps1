@@ -1,7 +1,7 @@
 # ================================
-# Watcher.ps1 (v4) – prosty, pancerny watcher oparty na polling
-# Co PollSeconds sekund liczy hash plików w katalogu z kodem (SourcePath).
-# Gdy hash się zmienia -> ExportProject.ps1 -> git add -> commit -> push (mirror/public)
+# Watcher.ps1 (v4.2) – prosty, pancerny watcher oparty na polling
+# Co PollSeconds sekund liczy "odcisk" plików w SourcePath.
+# Gdy odcisk się zmienia -> ExportProject.ps1 (z SourcePath=ProjectRoot) -> git add -> commit -> push (mirror/public)
 # ================================
 
 param(
@@ -11,7 +11,8 @@ param(
     [string]$SourcePath      = "",
     [string]$Remote          = "mirror",
     [string]$Branch          = "public",
-    [int]   $PollSeconds     = 5
+    [int]   $PollSeconds     = 5,
+    [string]$GitExe          = "C:\Program Files\Git\cmd\git.exe"
 )
 
 if ([string]::IsNullOrWhiteSpace($SourcePath)) {
@@ -19,13 +20,12 @@ if ([string]::IsNullOrWhiteSpace($SourcePath)) {
 }
 
 # Narzędzia i pliki
-$GitExe       = "C:\Program Files\Git\cmd\git.exe"
 $ExportScript = Join-Path $ProjectRoot "ExportProject.ps1"
 $LogFile      = Join-Path $ProjectRoot "Watcher.log"
 
 # Co monitorujemy
 $WatchedExtensions  = @(".cs", ".xaml", ".csproj", ".sln", ".ps1", ".json")
-$IgnorePathPatterns = @("\.git\", "\bin\", "\obj\", "\packages\", "\TestResults\")
+$IgnorePathPatterns = @("\.git\", "\bin\", "\obj\", "\packages\", "\TestResults\", "\.vs\")
 
 # ------------------------------
 # Pomocnicze
@@ -64,38 +64,41 @@ function Get-WatchedFiles {
 }
 
 function Compute-Signature {
-    # Tworzymy deterministyczny tekstowy „odcisk palca” na bazie ścieżki, rozmiaru i czasu modyfikacji
+    # deterministyczny "odcisk" po ścieżce, rozmiarze i czasie modyfikacji
     $builder = New-Object System.Text.StringBuilder
     $files = Get-WatchedFiles
     foreach ($f in $files) {
-        # Wpis: pełna_ścieżka|rozmiar|ticks_czasu
         [void]$builder.AppendLine(($f.FullName + "|" + $f.Length + "|" + $f.LastWriteTimeUtc.Ticks))
     }
     $txt = $builder.ToString()
 
-    # Hash SHA256 z powyższego tekstu
     $sha = [System.Security.Cryptography.SHA256]::Create()
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($txt)
     $hashBytes = $sha.ComputeHash($bytes)
     $sha.Dispose()
-    # Zwracamy hex
     -join ($hashBytes | ForEach-Object { $_.ToString("x2") })
 }
 
 function Do-ExportCommitPush {
     try {
         Write-Log "[INFO] Change detected -> export + commit + push"
+        Write-Log "[INFO] Ignored directories: bin, obj, .git, packages, TestResults, .vs"
 
-        # Eksport (uruchamiany z ROOT-u)
-        powershell -NoProfile -ExecutionPolicy Bypass -File $ExportScript | Out-Null
+        # Eksport – UWAGA: SourcePath dla eksportu = ProjectRoot,
+        # żeby ProjektSnapshot.txt powstał w ROOT, a nie w podfolderze.
+        powershell -NoProfile -ExecutionPolicy Bypass -File $ExportScript -SourcePath $ProjectRoot | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Log ("[ERROR] ExportProject.ps1 failed (exit " + $LASTEXITCODE + ")")
             return
         }
 
-        # git add/commit/push w ROOT
-        & $GitExe -C $ProjectRoot add .        | Out-Null
-        if ($LASTEXITCODE -ne 0) { Write-Log ("[ERROR] git add failed (exit " + $LASTEXITCODE + ")"); return }
+        # Upewnij się, że snapshot jest śledzony nawet przy .gitignore
+        & $GitExe -C $ProjectRoot add -f "ProjektSnapshot.txt" | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Log ("[ERROR] git add (snapshot) failed (exit " + $LASTEXITCODE + ")"); return }
+
+        # Dodaj resztę zmian
+        & $GitExe -C $ProjectRoot add . | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Log ("[ERROR] git add (all) failed (exit " + $LASTEXITCODE + ")"); return }
 
         $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
         $msg = "auto: snapshot " + $stamp
@@ -124,14 +127,13 @@ Write-Output ("[INFO] GitExe: " + $GitExe)
 
 ("=== Watcher started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + " ===") | Out-File -FilePath $LogFile -Encoding utf8 -Append
 
-if (-not (Test-Path $ProjectRoot)) { Write-Log ("[ERROR] ProjectRoot not found: " + $ProjectRoot); exit 1 }
-if (-not (Test-Path $SourcePath))  { Write-Log ("[ERROR] SourcePath not found: " + $SourcePath);   exit 1 }
-if (-not (Test-Path $ExportScript)){ Write-Log ("[ERROR] ExportProject.ps1 not found at: " + $ExportScript); exit 1 }
+if (-not (Test-Path $ProjectRoot))  { Write-Log ("[ERROR] ProjectRoot not found: " + $ProjectRoot);  exit 1 }
+if (-not (Test-Path $SourcePath))   { Write-Log ("[ERROR] SourcePath not found: " + $SourcePath);    exit 1 }
+if (-not (Test-Path $ExportScript)) { Write-Log ("[ERROR] ExportProject.ps1 not found at: " + $ExportScript); exit 1 }
 
 # ------------------------------
 # Pętla pollingu
 # ------------------------------
-# Pierwsza sygnatura (po starcie) – wywoła od razu 1. eksport, żebyś miał snapshot w repo
 $prevSig = ""
 while ($true) {
     try {
