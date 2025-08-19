@@ -1,11 +1,11 @@
-=== ProjektSnapshot.txt - 19.08.2025 23:23:44 ===
+﻿=== ProjektSnapshot.txt - 19.08.2025 23:29:48 ===
 ĹąrĂłdĹ‚o skanowania: C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods\GrafikWPF
 Ignorowane katalogi: bin, obj, .git, packages, TestResults, .vs
 Rozszerzenia: *.cs, *.xaml, *.csproj, *.sln, *.ps1, *.json
 PlikĂłw Ĺ‚Ä…cznie: 55
 ============================================================
 Podsumowanie plikĂłw wg folderĂłw:
-[WARN] Folder summary error: Error formatting a string: Wartość indeksu (o wartości początkowej zero) musi być większa od zera lub równa zeru oraz mniejsza niż rozmiar listy argumentów..
+  C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods\GrafikWPF  ->  55
 ============================================================
 
 === FILE: C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods\GrafikWPF\AlgorithmInfo.cs ===
