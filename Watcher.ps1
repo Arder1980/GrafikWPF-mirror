@@ -1,195 +1,152 @@
-# --- Watcher.ps1: autodetekcja git.exe, param -GitExe opcjonalny ---
+# ================================
+# Watcher.ps1 (v4) – prosty, pancerny watcher oparty na polling
+# Co PollSeconds sekund liczy hash plików w katalogu z kodem (SourcePath).
+# Gdy hash się zmienia -> ExportProject.ps1 -> git add -> commit -> push (mirror/public)
+# ================================
 
 param(
-    [Parameter(Mandatory=$true)] [string]$SourcePath,
-    [Parameter(Mandatory=$true)] [string]$RemoteName,
-    [Parameter(Mandatory=$true)] [string]$RemoteUrl,
-    [string]$RemoteBranch = "public",
-    [int]$DebounceSeconds = 15,
-    [string]$GitExe = ""
+    # ROOT repo (tu jest .git i ExportProject.ps1; tu zapisze się ProjektSnapshot.txt)
+    [string]$ProjectRoot     = "C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods",
+    # Katalog z kodem (monitorowany). Domyślnie podfolder "GrafikWPF" w ROOT.
+    [string]$SourcePath      = "",
+    [string]$Remote          = "mirror",
+    [string]$Branch          = "public",
+    [int]   $PollSeconds     = 5
 )
 
-function Write-Info($msg){ Write-Host "[INFO] $msg" -ForegroundColor Cyan }
-function Write-Warn($msg){ Write-Host "[WARN] $msg" -ForegroundColor Yellow }
-function Write-Err($msg){  Write-Host "[ERR ] $msg" -ForegroundColor Red }
+if ([string]::IsNullOrWhiteSpace($SourcePath)) {
+    $SourcePath = Join-Path $ProjectRoot "GrafikWPF"
+}
 
-# Znajdź git.exe: 1) jeśli podano -GitExe, 2) PATH, 3) typowe lokalizacje
-function Resolve-Git {
-    if($GitExe){
-        if(Test-Path -LiteralPath $GitExe){
-            Write-Info "Using git: $GitExe"
-            return $GitExe
-        } else {
-            Write-Warn "Provided GitExe not found: $GitExe"
-        }
+# Narzędzia i pliki
+$GitExe       = "C:\Program Files\Git\cmd\git.exe"
+$ExportScript = Join-Path $ProjectRoot "ExportProject.ps1"
+$LogFile      = Join-Path $ProjectRoot "Watcher.log"
+
+# Co monitorujemy
+$WatchedExtensions  = @(".cs", ".xaml", ".csproj", ".sln", ".ps1", ".json")
+$IgnorePathPatterns = @("\.git\", "\bin\", "\obj\", "\packages\", "\TestResults\")
+
+# ------------------------------
+# Pomocnicze
+# ------------------------------
+function Write-Log([string]$msg) {
+    try {
+        $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $line = "$ts $msg"
+        $line | Out-File -FilePath $LogFile -Encoding utf8 -Append
+        Write-Output $msg
+    } catch {
+        Write-Output ("[LOG ERROR] " + $_.Exception.Message)
     }
-    $cmd = Get-Command git -ErrorAction SilentlyContinue
-    if($cmd){ Write-Info "Using git from PATH: $($cmd.Path)"; return $cmd.Path }
+}
 
-    $candidates = @(
-        "C:\Program Files\Git\cmd\git.exe",
-        "C:\Program Files (x86)\Git\cmd\git.exe",
-        "$env:LOCALAPPDATA\GitHubDesktop\app-*\resources\app\git\cmd\git.exe",
-        "$env:LOCALAPPDATA\GitHub\PortableGit_*\cmd\git.exe"
-    )
-
-    foreach($pat in $candidates){
-        $found = Get-ChildItem -Path $pat -ErrorAction SilentlyContinue | Select-Object -First 1
-        if($found){ Write-Info "Using git: $($found.FullName)"; return $found.FullName }
+function Test-IgnoredPath([string]$fullPath) {
+    $p = $fullPath.ToLower()
+    foreach ($pat in $IgnorePathPatterns) {
+        if ($p -like ("*" + $pat + "*")) { return $true }
     }
-
-    throw "Nie znaleziono git.exe. Zainstaluj Git for Windows lub uruchom z parametrem -GitExe ""pełna\ścieżka\do\git.exe""."
+    return $false
 }
 
-# Helper: wywołanie git pełną ścieżką
-function Invoke-Git {
-    & $script:GitExe @args
+function Test-WatchedExtension([string]$fullPath) {
+    $ext = [System.IO.Path]::GetExtension($fullPath)
+    if ([string]::IsNullOrWhiteSpace($ext)) { return $false }
+    return ($WatchedExtensions -contains $ext.ToLower())
 }
 
+function Get-WatchedFiles {
+    Get-ChildItem -Path $SourcePath -Recurse -File -Force |
+        Where-Object {
+            (-not (Test-IgnoredPath $_.FullName)) -and (Test-WatchedExtension $_.FullName)
+        } |
+        Sort-Object FullName
+}
 
-# Inic
-$GitPath = Resolve-Git
-$SourcePath = (Resolve-Path $SourcePath).Path
+function Compute-Signature {
+    # Tworzymy deterministyczny tekstowy „odcisk palca” na bazie ścieżki, rozmiaru i czasu modyfikacji
+    $builder = New-Object System.Text.StringBuilder
+    $files = Get-WatchedFiles
+    foreach ($f in $files) {
+        # Wpis: pełna_ścieżka|rozmiar|ticks_czasu
+        [void]$builder.AppendLine(($f.FullName + "|" + $f.Length + "|" + $f.LastWriteTimeUtc.Ticks))
+    }
+    $txt = $builder.ToString()
 
-Write-Info "Start Watcher"
-Write-Info "Script: $PSCommandPath"
-Write-Info "SourcePath: $SourcePath"
-Write-Info "Remote: $RemoteName -> $RemoteUrl (branch: $RemoteBranch)"
-Write-Info "GitExe: $GitPath"
-Write-Info "Debounce: $DebounceSeconds s"
+    # Hash SHA256 z powyższego tekstu
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($txt)
+    $hashBytes = $sha.ComputeHash($bytes)
+    $sha.Dispose()
+    # Zwracamy hex
+    -join ($hashBytes | ForEach-Object { $_.ToString("x2") })
+}
 
-function Ensure-GitRepo {
-    Push-Location -LiteralPath $SourcePath
+function Do-ExportCommitPush {
     try {
-        if(-not (Test-Path (Join-Path $SourcePath '.git'))) {
-            Write-Info "Init local git repo..."
-            Invoke-Git init | Out-Null
-        }
-    } finally { Pop-Location }
-}
+        Write-Log "[INFO] Change detected -> export + commit + push"
 
-function Ensure-Remote {
-    Push-Location -LiteralPath $SourcePath
-    try {
-        $remotesRaw = Invoke-Git remote 2>$null
-        $has = $false
-        foreach($r in ($remotesRaw -split "`r?`n")){
-            if([string]::IsNullOrWhiteSpace($r)) { continue }
-            if($r.Trim() -eq $RemoteName) { $has = $true; break }
-        }
-        if($has){
-            $currentUrl = Invoke-Git remote get-url $RemoteName 2>$null
-            if($currentUrl -ne $RemoteUrl){
-                Write-Warn "Remote '$RemoteName' has different URL. Updating..."
-                Invoke-Git remote set-url $RemoteName $RemoteUrl | Out-Null
-            }
-        } else {
-            Write-Info "Adding remote '$RemoteName'..."
-            Invoke-Git remote add $RemoteName $RemoteUrl | Out-Null
-        }
-    } finally { Pop-Location }
-}
-
-function Ensure-Gitignore {
-    $gitignore = Join-Path $SourcePath ".gitignore"
-    if(Test-Path $gitignore){ return }
-    Write-Warn ".gitignore not found - creating safe default."
-    $content = @"
-# Tooling folders
-.git/
-.vs/
-.idea/
-.vscode/
-TestResults/
-packages/
-node_modules/
-dist/
-out/
-_ReSharper.Caches/
-
-# Build output
-bin/
-obj/
-*.pdb
-*.dll
-*.exe
-*.cache
-*.log
-
-# User/environment files
-*.user
-*.suo
-*.tmp
-*.swp
-*.bak
-*.db
-
-# System
-Thumbs.db
-.DS_Store
-
-# Profile-specific settings (optional)
-appsettings.*.json
-
-# Other artifacts
-*.coverage
-*.nupkg
-"@
-    $content | Out-File -FilePath $gitignore -Encoding UTF8 -Force
-}
-
-function Commit-And-Push {
-    Push-Location -LiteralPath $SourcePath
-    try {
-        Invoke-Git add -A | Out-Null
-        $status = Invoke-Git status --porcelain
-        if([string]::IsNullOrWhiteSpace($status)){
-            Write-Info "Nothing to push."
+        # Eksport (uruchamiany z ROOT-u)
+        powershell -NoProfile -ExecutionPolicy Bypass -File $ExportScript | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log ("[ERROR] ExportProject.ps1 failed (exit " + $LASTEXITCODE + ")")
             return
         }
-        $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        Invoke-Git commit -m "Auto-publish: $stamp" | Out-Null
 
-        $existsRemote = Invoke-Git ls-remote --heads $RemoteName $RemoteBranch
-        if([string]::IsNullOrWhiteSpace($existsRemote)){
-            Write-Info "First push to '$RemoteName/$RemoteBranch'..."
-            Invoke-Git push -u $RemoteName HEAD:refs/heads/$RemoteBranch | Out-Null
-        } else {
-            Invoke-Git push $RemoteName HEAD:refs/heads/$RemoteBranch | Out-Null
-        }
-        Write-Info "Pushed to $RemoteName/$RemoteBranch."
-    } finally { Pop-Location }
+        # git add/commit/push w ROOT
+        & $GitExe -C $ProjectRoot add .        | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Log ("[ERROR] git add failed (exit " + $LASTEXITCODE + ")"); return }
+
+        $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $msg = "auto: snapshot " + $stamp
+        & $GitExe -C $ProjectRoot commit -m $msg --allow-empty | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Log ("[ERROR] git commit failed (exit " + $LASTEXITCODE + ")"); return }
+
+        & $GitExe -C $ProjectRoot push $Remote $Branch | Out-Null
+        if ($LASTEXITCODE -ne 0) { Write-Log ("[ERROR] git push failed (exit " + $LASTEXITCODE + ") - sprawdz remote/branch/tozsamosc"); return }
+
+        Write-Log "[OK] Snapshot committed and pushed"
+    }
+    catch {
+        Write-Log ("[ERROR] Export/Commit/Push: " + $_.Exception.Message)
+    }
 }
 
-# --- START ---
-Ensure-GitRepo
-Ensure-Gitignore
-Ensure-Remote
-Commit-And-Push
+# ------------------------------
+# Start – sanity checks
+# ------------------------------
+Write-Output "[INFO] Start Watcher (polling)"
+Write-Output ("[INFO] ProjectRoot: " + $ProjectRoot)
+Write-Output ("[INFO] SourcePath: " + $SourcePath)
+Write-Output ("[INFO] PollSeconds: " + $PollSeconds)
+Write-Output ("[INFO] Export script: " + $ExportScript)
+Write-Output ("[INFO] GitExe: " + $GitExe)
 
-# Watcher with debounce
-$fsw = New-Object System.IO.FileSystemWatcher
-$fsw.Path = $SourcePath
-$fsw.IncludeSubdirectories = $true
-$fsw.EnableRaisingEvents = $true
-$fsw.NotifyFilter = [IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Size, Attributes'
+("=== Watcher started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + " ===") | Out-File -FilePath $LogFile -Encoding utf8 -Append
 
-$lastChange = Get-Date
-$pending = $false
+if (-not (Test-Path $ProjectRoot)) { Write-Log ("[ERROR] ProjectRoot not found: " + $ProjectRoot); exit 1 }
+if (-not (Test-Path $SourcePath))  { Write-Log ("[ERROR] SourcePath not found: " + $SourcePath);   exit 1 }
+if (-not (Test-Path $ExportScript)){ Write-Log ("[ERROR] ExportProject.ps1 not found at: " + $ExportScript); exit 1 }
 
-Register-ObjectEvent $fsw Changed -Action { $global:pending = $true; $global:lastChange = Get-Date } | Out-Null
-Register-ObjectEvent $fsw Created -Action { $global:pending = $true; $global:lastChange = Get-Date } | Out-Null
-Register-ObjectEvent $fsw Deleted -Action { $global:pending = $true; $global:lastChange = Get-Date } | Out-Null
-Register-ObjectEvent $fsw Renamed -Action { $global:pending = $true; $global:lastChange = Get-Date } | Out-Null
-
-Write-Info "Watcher running."
-try {
-    while($true){
-        Start-Sleep -Seconds 2
-        if($pending -and ((Get-Date) - $lastChange).TotalSeconds -ge $DebounceSeconds){
-            $pending = $false
-            try { Commit-And-Push }
-            catch { Write-Err $_; Start-Sleep -Seconds 5 }
+# ------------------------------
+# Pętla pollingu
+# ------------------------------
+# Pierwsza sygnatura (po starcie) – wywoła od razu 1. eksport, żebyś miał snapshot w repo
+$prevSig = ""
+while ($true) {
+    try {
+        $sig = Compute-Signature
+        if ($sig -ne $prevSig) {
+            if ($prevSig -eq "") {
+                Write-Log "[INFO] Initial snapshot (on start)"
+            } else {
+                Write-Log "[INFO] Snapshot changed"
+            }
+            $prevSig = $sig
+            Do-ExportCommitPush
         }
+    } catch {
+        Write-Log ("[ERROR] Poll loop: " + $_.Exception.Message)
     }
-} finally { $fsw.Dispose() }
+    Start-Sleep -Seconds ([Math]::Max(1, $PollSeconds))
+}

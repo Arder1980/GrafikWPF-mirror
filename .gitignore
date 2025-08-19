@@ -39,4 +39,3 @@ appsettings.*.json
 *.nupkg
 ExportProject.ps1
 GenerujPelnyKod.bat
-GrafikWPF_*.txt

@@ -1,65 +1,99 @@
-# --- Watcher.ps1 (ASCII-safe) ---
+# --- Watcher.ps1: autodetekcja git.exe, param -GitExe opcjonalny ---
 
 param(
     [Parameter(Mandatory=$true)] [string]$SourcePath,
     [Parameter(Mandatory=$true)] [string]$RemoteName,
     [Parameter(Mandatory=$true)] [string]$RemoteUrl,
     [string]$RemoteBranch = "public",
-    [int]$DebounceSeconds = 15
+    [int]$DebounceSeconds = 15,
+    [string]$GitExe = ""
 )
 
 function Write-Info($msg){ Write-Host "[INFO] $msg" -ForegroundColor Cyan }
 function Write-Warn($msg){ Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Write-Err($msg){  Write-Host "[ERR ] $msg" -ForegroundColor Red }
 
-function Test-Git {
-    $git = (Get-Command git -ErrorAction SilentlyContinue)
-    if(-not $git){ throw "Git not found in PATH. Install Git for Windows (with Git Credential Manager)." }
+# Znajdź git.exe: 1) jeśli podano -GitExe, 2) PATH, 3) typowe lokalizacje
+function Resolve-Git {
+    if($GitExe){
+        if(Test-Path -LiteralPath $GitExe){
+            Write-Info "Using git: $GitExe"
+            return $GitExe
+        } else {
+            Write-Warn "Provided GitExe not found: $GitExe"
+        }
+    }
+    $cmd = Get-Command git -ErrorAction SilentlyContinue
+    if($cmd){ Write-Info "Using git from PATH: $($cmd.Path)"; return $cmd.Path }
+
+    $candidates = @(
+        "C:\Program Files\Git\cmd\git.exe",
+        "C:\Program Files (x86)\Git\cmd\git.exe",
+        "$env:LOCALAPPDATA\GitHubDesktop\app-*\resources\app\git\cmd\git.exe",
+        "$env:LOCALAPPDATA\GitHub\PortableGit_*\cmd\git.exe"
+    )
+
+    foreach($pat in $candidates){
+        $found = Get-ChildItem -Path $pat -ErrorAction SilentlyContinue | Select-Object -First 1
+        if($found){ Write-Info "Using git: $($found.FullName)"; return $found.FullName }
+    }
+
+    throw "Nie znaleziono git.exe. Zainstaluj Git for Windows lub uruchom z parametrem -GitExe ""pełna\ścieżka\do\git.exe""."
 }
+
+# Helper: wywołanie git pełną ścieżką
+function Invoke-Git {
+    & $script:GitExe @args
+}
+
+
+# Inic
+$GitPath = Resolve-Git
+$SourcePath = (Resolve-Path $SourcePath).Path
+
+Write-Info "Start Watcher"
+Write-Info "Script: $PSCommandPath"
+Write-Info "SourcePath: $SourcePath"
+Write-Info "Remote: $RemoteName -> $RemoteUrl (branch: $RemoteBranch)"
+Write-Info "GitExe: $GitPath"
+Write-Info "Debounce: $DebounceSeconds s"
 
 function Ensure-GitRepo {
     Push-Location -LiteralPath $SourcePath
     try {
-        if(-not (Test-Path (Join-Path $SourcePath ".git"))) {
-            Write-Info "Initializing local git repo..."
-            git init | Out-Null
+        if(-not (Test-Path (Join-Path $SourcePath '.git'))) {
+            Write-Info "Init local git repo..."
+            Invoke-Git init | Out-Null
         }
-    } finally {
-        Pop-Location
-    }
+    } finally { Pop-Location }
 }
 
 function Ensure-Remote {
     Push-Location -LiteralPath $SourcePath
     try {
-        # Read existing remotes safely and check by exact name
-        $remotesRaw = git remote 2>$null
+        $remotesRaw = Invoke-Git remote 2>$null
         $has = $false
         foreach($r in ($remotesRaw -split "`r?`n")){
             if([string]::IsNullOrWhiteSpace($r)) { continue }
             if($r.Trim() -eq $RemoteName) { $has = $true; break }
         }
-
         if($has){
-            $currentUrl = git remote get-url $RemoteName 2>$null
+            $currentUrl = Invoke-Git remote get-url $RemoteName 2>$null
             if($currentUrl -ne $RemoteUrl){
                 Write-Warn "Remote '$RemoteName' has different URL. Updating..."
-                git remote set-url $RemoteName $RemoteUrl | Out-Null
+                Invoke-Git remote set-url $RemoteName $RemoteUrl | Out-Null
             }
         } else {
             Write-Info "Adding remote '$RemoteName'..."
-            git remote add $RemoteName $RemoteUrl | Out-Null
+            Invoke-Git remote add $RemoteName $RemoteUrl | Out-Null
         }
-    } finally {
-        Pop-Location
-    }
+    } finally { Pop-Location }
 }
 
 function Ensure-Gitignore {
     $gitignore = Join-Path $SourcePath ".gitignore"
     if(Test-Path $gitignore){ return }
-    Write-Warn ".gitignore not found - creating a safe default."
-
+    Write-Warn ".gitignore not found - creating safe default."
     $content = @"
 # Tooling folders
 .git/
@@ -101,44 +135,39 @@ appsettings.*.json
 *.coverage
 *.nupkg
 "@
-
     $content | Out-File -FilePath $gitignore -Encoding UTF8 -Force
 }
 
 function Commit-And-Push {
     Push-Location -LiteralPath $SourcePath
     try {
-        git add -A | Out-Null
-        $status = git status --porcelain
+        Invoke-Git add -A | Out-Null
+        $status = Invoke-Git status --porcelain
         if([string]::IsNullOrWhiteSpace($status)){
             Write-Info "Nothing to push."
             return
         }
         $stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        git commit -m "Auto-publish: $stamp" | Out-Null
+        Invoke-Git commit -m "Auto-publish: $stamp" | Out-Null
 
-        $existsRemote = git ls-remote --heads $RemoteName $RemoteBranch
+        $existsRemote = Invoke-Git ls-remote --heads $RemoteName $RemoteBranch
         if([string]::IsNullOrWhiteSpace($existsRemote)){
             Write-Info "First push to '$RemoteName/$RemoteBranch'..."
-            git push -u $RemoteName HEAD:refs/heads/$RemoteBranch | Out-Null
+            Invoke-Git push -u $RemoteName HEAD:refs/heads/$RemoteBranch | Out-Null
         } else {
-            git push $RemoteName HEAD:refs/heads/$RemoteBranch | Out-Null
+            Invoke-Git push $RemoteName HEAD:refs/heads/$RemoteBranch | Out-Null
         }
         Write-Info "Pushed to $RemoteName/$RemoteBranch."
-    } finally {
-        Pop-Location
-    }
+    } finally { Pop-Location }
 }
 
 # --- START ---
-Test-Git
-$SourcePath = (Resolve-Path $SourcePath).Path
 Ensure-GitRepo
 Ensure-Gitignore
 Ensure-Remote
 Commit-And-Push
 
-# File watcher with debounce
+# Watcher with debounce
 $fsw = New-Object System.IO.FileSystemWatcher
 $fsw.Path = $SourcePath
 $fsw.IncludeSubdirectories = $true
@@ -153,20 +182,14 @@ Register-ObjectEvent $fsw Created -Action { $global:pending = $true; $global:las
 Register-ObjectEvent $fsw Deleted -Action { $global:pending = $true; $global:lastChange = Get-Date } | Out-Null
 Register-ObjectEvent $fsw Renamed -Action { $global:pending = $true; $global:lastChange = Get-Date } | Out-Null
 
-Write-Info "Watcher running. Folder: $SourcePath | Remote: $RemoteName -> $RemoteUrl | Branch: $RemoteBranch | Debounce: $DebounceSeconds s"
+Write-Info "Watcher running."
 try {
     while($true){
         Start-Sleep -Seconds 2
         if($pending -and ((Get-Date) - $lastChange).TotalSeconds -ge $DebounceSeconds){
             $pending = $false
-            try {
-                Commit-And-Push
-            } catch {
-                Write-Err $_
-                Start-Sleep -Seconds 5
-            }
+            try { Commit-And-Push }
+            catch { Write-Err $_; Start-Sleep -Seconds 5 }
         }
     }
-} finally {
-    $fsw.Dispose()
-}
+} finally { $fsw.Dispose() }
