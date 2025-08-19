@@ -10,4 +10,3 @@
         string UzyciePamieci
     );
 }
-// snap test
