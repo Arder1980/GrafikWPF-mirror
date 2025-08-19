@@ -6,7 +6,7 @@ set SOURCE_PATH=C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods
 set REMOTE_NAME=mirror
 set REMOTE_URL=https://github.com/Arder1980/GrafikWPF-mirror.git
 set REMOTE_BRANCH=public
-set DEBOUNCE_SECONDS=15
+set DEBOUNCE_SECONDS=3
 REM Pelna sciezka do git.exe (TO MUSI BYC git.exe, nie GitHubDesktop.exe)
 set GIT_EXE=C:\Program Files\Git\cmd\git.exe
 REM === KONIEC KONFIGURACJI ===
