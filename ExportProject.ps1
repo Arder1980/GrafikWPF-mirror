@@ -1,6 +1,7 @@
 # ================================
 # ExportProject.ps1 – eksport kodu do 1 pliku TXT (auto-detect 'GrafikWPF')
-# UTF-8 z BOM (dla zgodności z Windows/Notatnik), rekurencja, .vs/bin/obj/.git/packages/TestResults ignorowane.
+# UTF-16 LE z BOM (Windows-friendly), rekurencja, .vs/bin/obj/.git/packages/TestResults ignorowane,
+# nagłówek z podsumowaniem + pełny indeks plików wg folderów (ścieżki względne).
 # ================================
 
 [CmdletBinding()]
@@ -10,7 +11,7 @@ param(
     [string]$OutputFile = "ProjektSnapshot.txt"
 )
 
-# Pełna ścieżka do snapshotu
+# Pełna ścieżka do snapshotu (w ROOT)
 $OutputFile = Join-Path $SourcePath $OutputFile
 
 # Rozszerzenia do eksportu
@@ -26,19 +27,17 @@ function New-Separator([int]$len = 60) {
 function Test-IgnoredFullPath {
     param([string]$fullLower)
     foreach ($d in $ignoreDirs) {
-        if ($fullLower -like "*\${d.ToLower()}\*") { return $true }
+        if ($fullLower -like ("*\" + $d.ToLower() + "\*")) { return $true }
     }
     return $false
 }
 
 function Get-WatchedFiles {
     param([string]$path)
-    # Uwaga: -Include działa pewnie, gdy -Path zawiera wildcard (*)
+    # -Include działa pewnie, gdy -Path zawiera wildcard (*)
     $pathWithWildcard = Join-Path $path '*'
     Get-ChildItem -Path $pathWithWildcard -Recurse -File -Force -Include $extensions -ErrorAction SilentlyContinue |
-        Where-Object {
-            -not (Test-IgnoredFullPath $_.FullName.ToLower())
-        } |
+        Where-Object { -not (Test-IgnoredFullPath $_.FullName.ToLower()) } |
         Sort-Object FullName
 }
 
@@ -47,7 +46,7 @@ function Count-MatchingFiles {
     try { return (Get-WatchedFiles -path $path).Count } catch { return 0 }
 }
 
-# --- Auto-detekcja podfolderu "GrafikWPF" (jeśli w nim jest więcej plików kodu niż w root) ---
+# --- Auto-detekcja podfolderu "GrafikWPF" (jeśli ma ≥ plików niż ROOT) ---
 $chosenPath = $SourcePath
 $grafikDir  = Join-Path $SourcePath "GrafikWPF"
 try {
@@ -61,13 +60,13 @@ try {
 try {
     $files = Get-WatchedFiles -path $chosenPath
 
-    # --- UTF-8 z BOM (większa kompatybilność z Notatnikiem/konsolą) ---
-    $utf8WithBom = New-Object System.Text.UTF8Encoding($true)
-    $sw = New-Object System.IO.StreamWriter($OutputFile, $false, $utf8WithBom)
+    # --- UTF-16 LE z BOM (Windows/Notatnik) ---
+    $unicodeWithBom = New-Object System.Text.UnicodeEncoding($false, $true)
+    $sw = New-Object System.IO.StreamWriter($OutputFile, $false, $unicodeWithBom)
 
     $sep = New-Separator 60
 
-    # --- Nagłówek snapshotu ---
+    # --- Nagłówek ---
     $sw.WriteLine("=== ProjektSnapshot.txt - {0} ===" -f (Get-Date))
     $sw.WriteLine("Źródło skanowania: {0}" -f $chosenPath)
     $sw.WriteLine("Ignorowane katalogi: {0}" -f ($ignoreDirs -join ", "))
@@ -75,7 +74,7 @@ try {
     $sw.WriteLine("Plików łącznie: {0}" -f $files.Count)
     $sw.WriteLine($sep)
 
-    # --- Podsumowanie plików wg folderów (bez operatora -f, żeby uniknąć kolizji z {} w ścieżkach) ---
+    # --- Podsumowanie wg folderów ---
     try {
         $sw.WriteLine("Podsumowanie plików wg folderów:")
         $groups = $files | Group-Object { $_.Directory.FullName }
@@ -87,6 +86,36 @@ try {
         $sw.WriteLine()
     } catch {
         $sw.WriteLine("[WARN] Folder summary error: {0}" -f $_.Exception.Message)
+        $sw.WriteLine($sep)
+        $sw.WriteLine()
+    }
+
+    # --- Indeks plików wg folderów (ścieżki względne od $chosenPath) ---
+    try {
+        $sw.WriteLine("Indeks plików wg folderów (ścieżki względne):")
+        $groups = $files | Group-Object { $_.Directory.FullName }
+        foreach ($g in $groups | Sort-Object Name) {
+            $dirAbs = $g.Name
+            $dirRel = $dirAbs
+            if ($dirRel.StartsWith($chosenPath)) {
+                $dirRel = $dirRel.Substring($chosenPath.Length).TrimStart('\')
+            }
+            if ([string]::IsNullOrWhiteSpace($dirRel)) { $dirRel = "." }
+
+            $sw.WriteLine("  [" + $dirRel + "]")
+            foreach ($f in ($g.Group | Sort-Object Name)) {
+                $rel = $f.FullName
+                if ($rel.StartsWith($chosenPath)) {
+                    $rel = $rel.Substring($chosenPath.Length).TrimStart('\')
+                }
+                $sw.WriteLine("    - " + $rel)
+            }
+            $sw.WriteLine()
+        }
+        $sw.WriteLine($sep)
+        $sw.WriteLine()
+    } catch {
+        $sw.WriteLine("[WARN] File index error: {0}" -f $_.Exception.Message)
         $sw.WriteLine($sep)
         $sw.WriteLine()
     }
@@ -106,7 +135,7 @@ try {
     $sw.Close()
 
     if ($files.Count -eq 0) {
-        "[WARN] Export finished: 0 files collected (check SourcePath / extensions)" | Out-File -FilePath $OutputFile -Append -Encoding utf8
+        "[WARN] Export finished: 0 files collected (check SourcePath / extensions)" | Out-File -FilePath $OutputFile -Append -Encoding Unicode
     }
 
     Write-Output "[OK] Snapshot saved to $OutputFile (files: $($files.Count); from: $chosenPath)"
@@ -114,7 +143,7 @@ try {
 }
 catch {
     try {
-        "[FATAL] $($_.Exception.Message)" | Out-File -FilePath $OutputFile -Append -Encoding utf8
+        "[FATAL] $($_.Exception.Message)" | Out-File -FilePath $OutputFile -Append -Encoding Unicode
     } catch { }
     Write-Output "[OK] Snapshot saved with errors to $OutputFile (from: $chosenPath)"
     exit 0
