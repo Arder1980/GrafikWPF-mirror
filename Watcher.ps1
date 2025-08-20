@@ -1,13 +1,12 @@
 # ================================
-# Watcher.ps1 (v4.2) – prosty, pancerny watcher oparty na polling
-# Co PollSeconds sekund liczy "odcisk" plików w SourcePath.
-# Gdy odcisk się zmienia -> ExportProject.ps1 (z SourcePath=ProjectRoot) -> git add -> commit -> push (mirror/public)
+# Watcher.ps1 (v4.3) – polling, snapshot w ROOT, log UTF-16 (Unicode)
 # ================================
 
+[CmdletBinding()]
 param(
-    # ROOT repo (tu jest .git i ExportProject.ps1; tu zapisze się ProjektSnapshot.txt)
+    # ROOT repo (tu jest .git i ExportProject.ps1; tu zapisze się ProjektSnapshot.txt i Watcher.log)
     [string]$ProjectRoot     = "C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods",
-    # Katalog z kodem (monitorowany). Domyślnie podfolder "GrafikWPF" w ROOT.
+    # Katalog z kodem do monitorowania (domyślnie podfolder "GrafikWPF" w ROOT)
     [string]$SourcePath      = "",
     [string]$Remote          = "mirror",
     [string]$Branch          = "public",
@@ -15,15 +14,16 @@ param(
     [string]$GitExe          = "C:\Program Files\Git\cmd\git.exe"
 )
 
+# Jeśli nie podano SourcePath -> ustaw na podfolder "GrafikWPF"
 if ([string]::IsNullOrWhiteSpace($SourcePath)) {
     $SourcePath = Join-Path $ProjectRoot "GrafikWPF"
 }
 
-# Narzędzia i pliki
+# Ścieżki narzędzi i logów
 $ExportScript = Join-Path $ProjectRoot "ExportProject.ps1"
 $LogFile      = Join-Path $ProjectRoot "Watcher.log"
 
-# Co monitorujemy
+# Monitorowane rozszerzenia i ignorowane katalogi (po pełnej ścieżce)
 $WatchedExtensions  = @(".cs", ".xaml", ".csproj", ".sln", ".ps1", ".json")
 $IgnorePathPatterns = @("\.git\", "\bin\", "\obj\", "\packages\", "\TestResults\", "\.vs\")
 
@@ -32,12 +32,13 @@ $IgnorePathPatterns = @("\.git\", "\bin\", "\obj\", "\packages\", "\TestResults\
 # ------------------------------
 function Write-Log([string]$msg) {
     try {
-        $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $ts  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $line = "$ts $msg"
-        $line | Out-File -FilePath $LogFile -Encoding utf8 -Append
-        Write-Output $msg
+        # LOG: UTF-16 (Unicode) z BOM – pełna zgodność z Windows/Notatnik
+        $line | Out-File -FilePath $LogFile -Append -Encoding Unicode
+        Write-Host $line
     } catch {
-        Write-Output ("[LOG ERROR] " + $_.Exception.Message)
+        Write-Host ("[LOG ERROR] " + $_.Exception.Message)
     }
 }
 
@@ -64,14 +65,12 @@ function Get-WatchedFiles {
 }
 
 function Compute-Signature {
-    # deterministyczny "odcisk" po ścieżce, rozmiarze i czasie modyfikacji
     $builder = New-Object System.Text.StringBuilder
     $files = Get-WatchedFiles
     foreach ($f in $files) {
         [void]$builder.AppendLine(($f.FullName + "|" + $f.Length + "|" + $f.LastWriteTimeUtc.Ticks))
     }
     $txt = $builder.ToString()
-
     $sha = [System.Security.Cryptography.SHA256]::Create()
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($txt)
     $hashBytes = $sha.ComputeHash($bytes)
@@ -84,8 +83,7 @@ function Do-ExportCommitPush {
         Write-Log "[INFO] Change detected -> export + commit + push"
         Write-Log "[INFO] Ignored directories: bin, obj, .git, packages, TestResults, .vs"
 
-        # Eksport – UWAGA: SourcePath dla eksportu = ProjectRoot,
-        # żeby ProjektSnapshot.txt powstał w ROOT, a nie w podfolderze.
+        # Eksport: SourcePath dla eksportu = ProjectRoot (snapshot w ROOT)
         powershell -NoProfile -ExecutionPolicy Bypass -File $ExportScript -SourcePath $ProjectRoot | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Log ("[ERROR] ExportProject.ps1 failed (exit " + $LASTEXITCODE + ")")
@@ -118,14 +116,16 @@ function Do-ExportCommitPush {
 # ------------------------------
 # Start – sanity checks
 # ------------------------------
-Write-Output "[INFO] Start Watcher (polling)"
-Write-Output ("[INFO] ProjectRoot: " + $ProjectRoot)
-Write-Output ("[INFO] SourcePath: " + $SourcePath)
-Write-Output ("[INFO] PollSeconds: " + $PollSeconds)
-Write-Output ("[INFO] Export script: " + $ExportScript)
-Write-Output ("[INFO] GitExe: " + $GitExe)
+Write-Host "=== Start Watcher ==="
+Write-Log  "[INFO] Start Watcher (polling)"
+Write-Log  ("[INFO] ProjectRoot: " + $ProjectRoot)
+Write-Log  ("[INFO] SourcePath: " + $SourcePath)
+Write-Log  ("[INFO] PollSeconds: " + $PollSeconds)
+Write-Log  ("[INFO] Export script: " + $ExportScript)
+Write-Log  ("[INFO] GitExe: " + $GitExe)
 
-("=== Watcher started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + " ===") | Out-File -FilePath $LogFile -Encoding utf8 -Append
+# Nagłówek logu
+("=== Watcher started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + " ===") | Out-File -FilePath $LogFile -Append -Encoding Unicode
 
 if (-not (Test-Path $ProjectRoot))  { Write-Log ("[ERROR] ProjectRoot not found: " + $ProjectRoot);  exit 1 }
 if (-not (Test-Path $SourcePath))   { Write-Log ("[ERROR] SourcePath not found: " + $SourcePath);    exit 1 }
@@ -135,15 +135,12 @@ if (-not (Test-Path $ExportScript)) { Write-Log ("[ERROR] ExportProject.ps1 not 
 # Pętla pollingu
 # ------------------------------
 $prevSig = ""
+Write-Log "[INFO] Initial snapshot (on start)"
 while ($true) {
     try {
         $sig = Compute-Signature
         if ($sig -ne $prevSig) {
-            if ($prevSig -eq "") {
-                Write-Log "[INFO] Initial snapshot (on start)"
-            } else {
-                Write-Log "[INFO] Snapshot changed"
-            }
+            if ($prevSig -ne "") { Write-Log "[INFO] Snapshot changed" }
             $prevSig = $sig
             Do-ExportCommitPush
         }
