@@ -1,5 +1,5 @@
 # ================================
-# Watcher.ps1 (v4.3) – polling, snapshot w ROOT, log UTF-16 (Unicode)
+# Watcher.ps1 (v4.4) – polling, snapshot w ROOT, log UTF-8 z BOM, konsola UTF-8
 # ================================
 
 [CmdletBinding()]
@@ -14,7 +14,13 @@ param(
     [string]$GitExe          = "C:\Program Files\Git\cmd\git.exe"
 )
 
-# Jeśli nie podano SourcePath -> ustaw na podfolder "GrafikWPF"
+# --- Wymuś UTF-8 w konsoli/PowerShell (ważne przy Windows PowerShell 5.1) ---
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch { }
+
+# Ustal domyślny SourcePath, jeśli pusty
 if ([string]::IsNullOrWhiteSpace($SourcePath)) {
     $SourcePath = Join-Path $ProjectRoot "GrafikWPF"
 }
@@ -28,14 +34,21 @@ $WatchedExtensions  = @(".cs", ".xaml", ".csproj", ".sln", ".ps1", ".json")
 $IgnorePathPatterns = @("\.git\", "\bin\", "\obj\", "\packages\", "\TestResults\", "\.vs\")
 
 # ------------------------------
-# Pomocnicze
+# LOG w UTF-8 z BOM
 # ------------------------------
+# Zapewnij BOM przy pierwszym zapisie
+if (-not (Test-Path $LogFile)) {
+    $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+    $pre = "=== Watcher started {0} ===`r`n" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    [System.IO.File]::WriteAllText($LogFile, $pre, $utf8Bom)
+}
+
 function Write-Log([string]$msg) {
     try {
         $ts  = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $line = "$ts $msg"
-        # LOG: UTF-16 (Unicode) z BOM – pełna zgodność z Windows/Notatnik
-        $line | Out-File -FilePath $LogFile -Append -Encoding Unicode
+        # LOG: UTF-8 (PS5 zapisze z BOM, bo plik już ma BOM; nie nadpisujemy nagłówka)
+        $line | Out-File -FilePath $LogFile -Append -Encoding utf8
         Write-Host $line
     } catch {
         Write-Host ("[LOG ERROR] " + $_.Exception.Message)
@@ -83,9 +96,9 @@ function Do-ExportCommitPush {
         Write-Log "[INFO] Change detected -> export + commit + push"
         Write-Log "[INFO] Ignored directories: bin, obj, .git, packages, TestResults, .vs"
 
-        # Eksport: SourcePath dla eksportu = ProjectRoot (snapshot w ROOT)
+        # --- URUCHOM EXPORT i ZAPISZ JEGO WYJŚCIE W LOGU (UTF-8) ---
         $exportOutput = powershell -NoProfile -ExecutionPolicy Bypass -File $ExportScript -SourcePath $ProjectRoot *>&1
-	$exportOutput | ForEach-Object { Write-Log $_ }
+        foreach ($ln in $exportOutput) { Write-Log $ln }
         if ($LASTEXITCODE -ne 0) {
             Write-Log ("[ERROR] ExportProject.ps1 failed (exit " + $LASTEXITCODE + ")")
             return
@@ -115,7 +128,7 @@ function Do-ExportCommitPush {
 }
 
 # ------------------------------
-# Start – sanity checks
+# Start – sanity info
 # ------------------------------
 Write-Host "=== Start Watcher ==="
 Write-Log  "[INFO] Start Watcher (polling)"
@@ -124,9 +137,6 @@ Write-Log  ("[INFO] SourcePath: " + $SourcePath)
 Write-Log  ("[INFO] PollSeconds: " + $PollSeconds)
 Write-Log  ("[INFO] Export script: " + $ExportScript)
 Write-Log  ("[INFO] GitExe: " + $GitExe)
-
-# Nagłówek logu
-("=== Watcher started " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + " ===") | Out-File -FilePath $LogFile -Append -Encoding Unicode
 
 if (-not (Test-Path $ProjectRoot))  { Write-Log ("[ERROR] ProjectRoot not found: " + $ProjectRoot);  exit 1 }
 if (-not (Test-Path $SourcePath))   { Write-Log ("[ERROR] SourcePath not found: " + $SourcePath);    exit 1 }

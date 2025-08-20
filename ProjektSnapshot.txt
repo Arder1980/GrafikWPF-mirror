@@ -1,4 +1,4 @@
-﻿=== ProjektSnapshot.txt - 20.08.2025 20:48:04 ===
+﻿=== ProjektSnapshot.txt - 20.08.2025 20:56:27 ===
 ĹąrĂłdĹ‚o skanowania: C:\Users\adaml\OneDrive\Pulpit\GrafikWPF - projekt - GPT mods\GrafikWPF
 Ignorowane katalogi: bin, obj, .git, packages, TestResults, .vs
 Rozszerzenia: *.cs, *.xaml, *.csproj, *.sln, *.ps1, *.json
