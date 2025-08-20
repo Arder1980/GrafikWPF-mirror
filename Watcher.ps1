@@ -84,7 +84,8 @@ function Do-ExportCommitPush {
         Write-Log "[INFO] Ignored directories: bin, obj, .git, packages, TestResults, .vs"
 
         # Eksport: SourcePath dla eksportu = ProjectRoot (snapshot w ROOT)
-        powershell -NoProfile -ExecutionPolicy Bypass -File $ExportScript -SourcePath $ProjectRoot | Out-Null
+        $exportOutput = powershell -NoProfile -ExecutionPolicy Bypass -File $ExportScript -SourcePath $ProjectRoot *>&1
+	$exportOutput | ForEach-Object { Write-Log $_ }
         if ($LASTEXITCODE -ne 0) {
             Write-Log ("[ERROR] ExportProject.ps1 failed (exit " + $LASTEXITCODE + ")")
             return

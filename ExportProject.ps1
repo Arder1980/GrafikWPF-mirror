@@ -1,7 +1,7 @@
 # ================================
 # ExportProject.ps1 – eksport kodu do 1 pliku TXT (auto-detect 'GrafikWPF')
-# UTF-16 LE z BOM (Windows-friendly), rekurencja, .vs/bin/obj/.git/packages/TestResults ignorowane,
-# nagłówek z podsumowaniem + pełny indeks plików wg folderów (ścieżki względne).
+# UTF-8 z BOM (Windows + GitHub friendly), rekurencja, .vs/bin/obj/.git/packages/TestResults ignorowane,
+# nagłówek: podsumowanie folderów + indeks plików (ścieżki względne) + diagnostyka.
 # ================================
 
 [CmdletBinding()]
@@ -60,11 +60,23 @@ try {
 try {
     $files = Get-WatchedFiles -path $chosenPath
 
-    # --- UTF-16 LE z BOM (Windows/Notatnik) ---
-    $unicodeWithBom = New-Object System.Text.UnicodeEncoding($false, $true)
-    $sw = New-Object System.IO.StreamWriter($OutputFile, $false, $unicodeWithBom)
+    # --- UTF-8 z BOM (UTF8-SIG) – poprawne ogonki w Notatniku i na GitHubie ---
+    $utf8WithBom = New-Object System.Text.UTF8Encoding($true)  # BOM = true
+    $sw = New-Object System.IO.StreamWriter($OutputFile, $false, $utf8WithBom)
 
     $sep = New-Separator 60
+
+    # --- Dane do nagłówka / diagnostyka ---
+    $dirGroups = $files | Group-Object { $_.Directory.FullName }
+    $dirCount  = $dirGroups.Count
+
+    # Podgląd pierwszych 10 względnych ścieżek (bez .ForEach – PS5 kompatybilnie)
+    $preview = @()
+    foreach ($f in ($files | Select-Object -First 10)) {
+        $rel = $f.FullName
+        if ($rel.StartsWith($chosenPath)) { $rel = $rel.Substring($chosenPath.Length).TrimStart('\') }
+        $preview += $rel
+    }
 
     # --- Nagłówek ---
     $sw.WriteLine("=== ProjektSnapshot.txt - {0} ===" -f (Get-Date))
@@ -72,53 +84,41 @@ try {
     $sw.WriteLine("Ignorowane katalogi: {0}" -f ($ignoreDirs -join ", "))
     $sw.WriteLine("Rozszerzenia: {0}" -f ($extensions -join ", "))
     $sw.WriteLine("Plików łącznie: {0}" -f $files.Count)
+    $sw.WriteLine("Unikalnych folderów: {0}" -f $dirCount)
+    if ($files.Count -gt 0) {
+        $sw.WriteLine("Podgląd pierwszych 10 ścieżek (względnych):")
+        foreach ($p in $preview) { $sw.WriteLine("  - " + $p) }
+    }
     $sw.WriteLine($sep)
 
-    # --- Podsumowanie wg folderów ---
-    try {
-        $sw.WriteLine("Podsumowanie plików wg folderów:")
-        $groups = $files | Group-Object { $_.Directory.FullName }
-        foreach ($g in $groups | Sort-Object Name) {
-            $line = "  " + $g.Name + "  ->  " + $g.Count
-            $sw.WriteLine($line)
-        }
-        $sw.WriteLine($sep)
-        $sw.WriteLine()
-    } catch {
-        $sw.WriteLine("[WARN] Folder summary error: {0}" -f $_.Exception.Message)
-        $sw.WriteLine($sep)
-        $sw.WriteLine()
+    # --- Podsumowanie wg folderów (malejąco po liczbie, potem po nazwie) ---
+    $sw.WriteLine("Podsumowanie plików wg folderów:")
+    $sortedSummary = $dirGroups | Sort-Object -Property @{Expression='Count';Descending=$true}, @{Expression='Name';Descending=$false}
+    foreach ($g in $sortedSummary) {
+        $sw.WriteLine("  " + $g.Name + "  ->  " + $g.Count)
     }
+    $sw.WriteLine($sep)
+    $sw.WriteLine()
 
     # --- Indeks plików wg folderów (ścieżki względne od $chosenPath) ---
-    try {
-        $sw.WriteLine("Indeks plików wg folderów (ścieżki względne):")
-        $groups = $files | Group-Object { $_.Directory.FullName }
-        foreach ($g in $groups | Sort-Object Name) {
-            $dirAbs = $g.Name
-            $dirRel = $dirAbs
-            if ($dirRel.StartsWith($chosenPath)) {
-                $dirRel = $dirRel.Substring($chosenPath.Length).TrimStart('\')
-            }
-            if ([string]::IsNullOrWhiteSpace($dirRel)) { $dirRel = "." }
+    $sw.WriteLine("Indeks plików wg folderów (ścieżki względne):")
+    $sortedGroups = $dirGroups | Sort-Object -Property Name
+    foreach ($g in $sortedGroups) {
+        $dirAbs = $g.Name
+        $dirRel = $dirAbs
+        if ($dirRel.StartsWith($chosenPath)) { $dirRel = $dirRel.Substring($chosenPath.Length).TrimStart('\') }
+        if ([string]::IsNullOrWhiteSpace($dirRel)) { $dirRel = "." }
 
-            $sw.WriteLine("  [" + $dirRel + "]")
-            foreach ($f in ($g.Group | Sort-Object Name)) {
-                $rel = $f.FullName
-                if ($rel.StartsWith($chosenPath)) {
-                    $rel = $rel.Substring($chosenPath.Length).TrimStart('\')
-                }
-                $sw.WriteLine("    - " + $rel)
-            }
-            $sw.WriteLine()
+        $sw.WriteLine("  [" + $dirRel + "]")
+        foreach ($f in ($g.Group | Sort-Object Name)) {
+            $rel = $f.FullName
+            if ($rel.StartsWith($chosenPath)) { $rel = $rel.Substring($chosenPath.Length).TrimStart('\') }
+            $sw.WriteLine("    - " + $rel)
         }
-        $sw.WriteLine($sep)
-        $sw.WriteLine()
-    } catch {
-        $sw.WriteLine("[WARN] File index error: {0}" -f $_.Exception.Message)
-        $sw.WriteLine($sep)
         $sw.WriteLine()
     }
+    $sw.WriteLine($sep)
+    $sw.WriteLine()
 
     # --- Zawartość plików ---
     foreach ($f in $files) {
@@ -135,7 +135,7 @@ try {
     $sw.Close()
 
     if ($files.Count -eq 0) {
-        "[WARN] Export finished: 0 files collected (check SourcePath / extensions)" | Out-File -FilePath $OutputFile -Append -Encoding Unicode
+        "[WARN] Export finished: 0 files collected (check SourcePath / extensions)" | Out-File -FilePath $OutputFile -Append -Encoding utf8
     }
 
     Write-Output "[OK] Snapshot saved to $OutputFile (files: $($files.Count); from: $chosenPath)"
@@ -143,7 +143,7 @@ try {
 }
 catch {
     try {
-        "[FATAL] $($_.Exception.Message)" | Out-File -FilePath $OutputFile -Append -Encoding Unicode
+        "[FATAL] $($_.Exception.Message)" | Out-File -FilePath $OutputFile -Append -Encoding utf8
     } catch { }
     Write-Output "[OK] Snapshot saved with errors to $OutputFile (from: $chosenPath)"
     exit 0
